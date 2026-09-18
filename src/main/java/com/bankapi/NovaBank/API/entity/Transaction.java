@@ -1,7 +1,5 @@
 package com.bankapi.NovaBank.API.entity;
 
-import com.bankapi.NovaBank.API.entity.Account;
-import com.bankapi.NovaBank.API.entity.TransactionType;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -20,23 +18,30 @@ public class Transaction {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(nullable = false, unique = true)
     private String transactionReference;
 
-    @ManyToOne
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "sender_account_id")
     private Account senderAccount;
 
-    @ManyToOne
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "receiver_account_id")
     private Account receiverAccount;
 
+    @Column(nullable = false, precision = 19, scale = 2)
     private BigDecimal amount;
 
     @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
     private TransactionType transactionType;
 
     @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
     private TransactionStatus status;
 
     private String description;
 
+    @Column(nullable = false)
     private LocalDateTime transactionDate;
 }

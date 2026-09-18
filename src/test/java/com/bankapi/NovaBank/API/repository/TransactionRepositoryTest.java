@@ -75,10 +75,12 @@ class TransactionRepositoryTest extends AbstractContainerBaseTest {
 
         transactionRepository.save(
                 Transaction.builder()
-                        .senderAccount(sender)
+                        .transactionReference("TXN-TEST-001")
                         .receiverAccount(receiver)
                         .amount(BigDecimal.valueOf(1000))
                         .transactionType(TransactionType.TRANSFER)
+                        .status(TransactionStatus.SUCCESS)
+                        .description("Account Transfer")
                         .transactionDate(LocalDateTime.now())
                         .build()
         );

@@ -2,10 +2,7 @@ package com.bankapi.NovaBank.API.service;
 
 import com.bankapi.NovaBank.API.dto.response.AccountResponse;
 import com.bankapi.NovaBank.API.dto.response.TransactionResponse;
-import com.bankapi.NovaBank.API.entity.Account;
-import com.bankapi.NovaBank.API.entity.Transaction;
-import com.bankapi.NovaBank.API.entity.TransactionType;
-import com.bankapi.NovaBank.API.entity.User;
+import com.bankapi.NovaBank.API.entity.*;
 import com.bankapi.NovaBank.API.exception.AccountAlreadyExistsException;
 import com.bankapi.NovaBank.API.exception.AccountNotFoundException;
 import com.bankapi.NovaBank.API.exception.InsufficientBalanceException;
@@ -189,16 +186,22 @@ class AccountServiceTest {
     void shouldDepositSuccessfully() {
 
         Transaction transaction = Transaction.builder()
+                .transactionReference("TXN-TEST-001")
                 .receiverAccount(account)
                 .amount(BigDecimal.valueOf(2000))
                 .transactionType(TransactionType.DEPOSIT)
+                .status(TransactionStatus.SUCCESS)
+                .description("Account deposit")
                 .transactionDate(LocalDateTime.now())
                 .build();
 
         TransactionResponse response =
                 mock(TransactionResponse.class);
 
-        when(accountRepository.findByUserEmail(anyString()))
+        /*
+         * Deposit now uses the pessimistic-locking query.
+         */
+        when(accountRepository.findByUserEmailForUpdate(anyString()))
                 .thenReturn(Optional.of(account));
 
         when(transactionRepository.save(any(Transaction.class)))
@@ -207,13 +210,22 @@ class AccountServiceTest {
         when(transactionMapper.toResponse(transaction))
                 .thenReturn(response);
 
-        accountService.deposit(
-                user.getEmail(),
-                BigDecimal.valueOf(2000)
-        );
+        TransactionResponse result =
+                accountService.deposit(
+                        user.getEmail(),
+                        BigDecimal.valueOf(2000)
+                );
+
+        assertThat(result).isEqualTo(response);
 
         assertThat(account.getBalance())
                 .isEqualByComparingTo("7000");
+
+        verify(accountRepository)
+                .findByUserEmailForUpdate(user.getEmail());
+
+        verify(transactionRepository)
+                .save(any(Transaction.class));
     }
 
     @Test
@@ -226,6 +238,9 @@ class AccountServiceTest {
                         BigDecimal.ZERO
                 )
         );
+
+        verify(accountRepository, never())
+                .findByUserEmailForUpdate(anyString());
     }
 
     // ================= WITHDRAW =================
@@ -234,28 +249,44 @@ class AccountServiceTest {
     void shouldWithdrawSuccessfully() {
 
         Transaction transaction = Transaction.builder()
-                .senderAccount(account)
-                .amount(BigDecimal.valueOf(1000))
+                .transactionReference("TXN-TEST-001")
+                .receiverAccount(account)
+                .amount(BigDecimal.valueOf(2000))
                 .transactionType(TransactionType.WITHDRAW)
+                .status(TransactionStatus.SUCCESS)
+                .description("Account withdrawal")
                 .transactionDate(LocalDateTime.now())
                 .build();
 
-        when(accountRepository.findByUserEmail(anyString()))
+        TransactionResponse response =
+                mock(TransactionResponse.class);
+
+        /*
+         * Withdrawal must retrieve the account with
+         * PESSIMISTIC_WRITE locking.
+         */
+        when(accountRepository.findByUserEmailForUpdate(anyString()))
                 .thenReturn(Optional.of(account));
 
         when(transactionRepository.save(any(Transaction.class)))
                 .thenReturn(transaction);
 
         when(transactionMapper.toResponse(transaction))
-                .thenReturn(mock(TransactionResponse.class));
+                .thenReturn(response);
 
-        accountService.withdraw(
-                user.getEmail(),
-                BigDecimal.valueOf(1000)
-        );
+        TransactionResponse result =
+                accountService.withdraw(
+                        user.getEmail(),
+                        BigDecimal.valueOf(1000)
+                );
+
+        assertThat(result).isEqualTo(response);
 
         assertThat(account.getBalance())
                 .isEqualByComparingTo("4000");
+
+        verify(accountRepository)
+                .findByUserEmailForUpdate(user.getEmail());
     }
 
     @Test
@@ -268,12 +299,15 @@ class AccountServiceTest {
                         BigDecimal.ZERO
                 )
         );
+
+        verify(accountRepository, never())
+                .findByUserEmailForUpdate(anyString());
     }
 
     @Test
     void shouldThrowWhenBalanceInsufficient() {
 
-        when(accountRepository.findByUserEmail(anyString()))
+        when(accountRepository.findByUserEmailForUpdate(anyString()))
                 .thenReturn(Optional.of(account));
 
         assertThrows(
@@ -281,6 +315,24 @@ class AccountServiceTest {
                 () -> accountService.withdraw(
                         user.getEmail(),
                         BigDecimal.valueOf(6000)
+                )
+        );
+
+        verify(transactionRepository, never())
+                .save(any(Transaction.class));
+    }
+
+    @Test
+    void shouldThrowWhenWithdrawAccountNotFound() {
+
+        when(accountRepository.findByUserEmailForUpdate(anyString()))
+                .thenReturn(Optional.empty());
+
+        assertThrows(
+                AccountNotFoundException.class,
+                () -> accountService.withdraw(
+                        user.getEmail(),
+                        BigDecimal.valueOf(1000)
                 )
         );
     }
@@ -291,35 +343,68 @@ class AccountServiceTest {
     void shouldTransferSuccessfully() {
 
         Transaction transaction = Transaction.builder()
-                .senderAccount(account)
-                .receiverAccount(receiver)
+                .transactionReference("TXN-TEST-001")
+                .receiverAccount(account)
                 .amount(BigDecimal.valueOf(2000))
                 .transactionType(TransactionType.TRANSFER)
+                .status(TransactionStatus.SUCCESS)
+                .description("Account Transfer")
+                .transactionDate(LocalDateTime.now())
                 .build();
 
-        when(accountRepository.findByUserEmail(anyString()))
+        TransactionResponse response =
+                mock(TransactionResponse.class);
+
+        /*
+         * Initial reads identify the sender and receiver.
+         */
+        when(accountRepository.findByUserEmail(user.getEmail()))
                 .thenReturn(Optional.of(account));
 
-        when(accountRepository.findByAccountNumber(anyString()))
+        when(accountRepository.findByAccountNumber(
+                receiver.getAccountNumber()))
+                .thenReturn(Optional.of(receiver));
+
+        /*
+         * The service then obtains pessimistic write locks
+         * using account numbers.
+         */
+        when(accountRepository.findByAccountNumberForUpdate(
+                account.getAccountNumber()))
+                .thenReturn(Optional.of(account));
+
+        when(accountRepository.findByAccountNumberForUpdate(
+                receiver.getAccountNumber()))
                 .thenReturn(Optional.of(receiver));
 
         when(transactionRepository.save(any(Transaction.class)))
                 .thenReturn(transaction);
 
         when(transactionMapper.toResponse(transaction))
-                .thenReturn(mock(TransactionResponse.class));
+                .thenReturn(response);
 
-        accountService.transferFunds(
-                user.getEmail(),
-                receiver.getAccountNumber(),
-                BigDecimal.valueOf(2000)
-        );
+        TransactionResponse result =
+                accountService.transferFunds(
+                        user.getEmail(),
+                        receiver.getAccountNumber(),
+                        BigDecimal.valueOf(2000)
+                );
+
+        assertThat(result).isEqualTo(response);
 
         assertThat(account.getBalance())
                 .isEqualByComparingTo("3000");
 
         assertThat(receiver.getBalance())
                 .isEqualByComparingTo("5000");
+
+        verify(accountRepository)
+                .findByAccountNumberForUpdate(
+                        account.getAccountNumber());
+
+        verify(accountRepository)
+                .findByAccountNumberForUpdate(
+                        receiver.getAccountNumber());
     }
 
     @Test
@@ -333,13 +418,28 @@ class AccountServiceTest {
                         BigDecimal.ZERO
                 )
         );
+
+        verify(accountRepository, never())
+                .findByUserEmail(anyString());
     }
 
     @Test
     void shouldThrowWhenTransferBalanceInsufficient() {
 
-        when(accountRepository.findByUserEmail(anyString()))
+        when(accountRepository.findByUserEmail(user.getEmail()))
                 .thenReturn(Optional.of(account));
+
+        when(accountRepository.findByAccountNumber(
+                receiver.getAccountNumber()))
+                .thenReturn(Optional.of(receiver));
+
+        when(accountRepository.findByAccountNumberForUpdate(
+                account.getAccountNumber()))
+                .thenReturn(Optional.of(account));
+
+        when(accountRepository.findByAccountNumberForUpdate(
+                receiver.getAccountNumber()))
+                .thenReturn(Optional.of(receiver));
 
         assertThrows(
                 InsufficientBalanceException.class,
@@ -349,6 +449,52 @@ class AccountServiceTest {
                         BigDecimal.valueOf(10000)
                 )
         );
+
+        verify(transactionRepository, never())
+                .save(any(Transaction.class));
+    }
+
+    @Test
+    void shouldThrowWhenTransferReceiverNotFound() {
+
+        when(accountRepository.findByUserEmail(user.getEmail()))
+                .thenReturn(Optional.of(account));
+
+        when(accountRepository.findByAccountNumber(
+                receiver.getAccountNumber()))
+                .thenReturn(Optional.empty());
+
+        assertThrows(
+                AccountNotFoundException.class,
+                () -> accountService.transferFunds(
+                        user.getEmail(),
+                        receiver.getAccountNumber(),
+                        BigDecimal.valueOf(1000)
+                )
+        );
+    }
+
+    @Test
+    void shouldThrowWhenTransferToSameAccount() {
+
+        when(accountRepository.findByUserEmail(user.getEmail()))
+                .thenReturn(Optional.of(account));
+
+        when(accountRepository.findByAccountNumber(
+                account.getAccountNumber()))
+                .thenReturn(Optional.of(account));
+
+        assertThrows(
+                InvalidAmountException.class,
+                () -> accountService.transferFunds(
+                        user.getEmail(),
+                        account.getAccountNumber(),
+                        BigDecimal.valueOf(1000)
+                )
+        );
+
+        verify(accountRepository, never())
+                .findByAccountNumberForUpdate(anyString());
     }
 
     // ================= TRANSACTIONS =================
@@ -357,15 +503,22 @@ class AccountServiceTest {
     void shouldReturnTransactions() {
 
         Transaction transaction = Transaction.builder()
-                .senderAccount(account)
-                .receiverAccount(receiver)
-                .amount(BigDecimal.valueOf(500))
+                .transactionReference("TXN-TEST-001")
+                .receiverAccount(account)
+                .amount(BigDecimal.valueOf(2000))
                 .transactionType(TransactionType.TRANSFER)
+                .status(TransactionStatus.SUCCESS)
+                .description("Account Transfer")
+                .transactionDate(LocalDateTime.now())
                 .build();
 
         Page<Transaction> page =
                 new PageImpl<>(List.of(transaction));
 
+        /*
+         * Transaction history is read-only, so it should
+         * continue using the normal account lookup.
+         */
         when(accountRepository.findByUserEmail(anyString()))
                 .thenReturn(Optional.of(account));
 
@@ -381,7 +534,7 @@ class AccountServiceTest {
         Page<TransactionResponse> result =
                 accountService.getUserTransactions(
                         user.getEmail(),
-                        PageRequest.of(0,10)
+                        PageRequest.of(0, 10)
                 );
 
         assertThat(result.getTotalElements()).isEqualTo(1);
